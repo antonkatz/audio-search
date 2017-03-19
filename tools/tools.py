@@ -3,6 +3,7 @@ import scipy.io.wavfile
 import scipy.signal as ss
 import numpy as np
 from matplotlib import pyplot as plt
+from shapely.geometry import LineString
 
 
 def todB(array):
@@ -91,15 +92,19 @@ def generateSpectrogram(audio_data, segment_length, sample_rate, overlap, cutoff
 
 vfrand = np.vectorize(np.random.randint, otypes=[np.ndarray], excluded=["size"], signature="(),()->(m)")
 
-
 # samples with optional constraints, replacing them with random values each individual sample point
 # limitd is limit to distance
-def sample_opt_constraint(data, num_samples, limitd, distance_const=np.nan, angle_constraint=np.nan):
+""":returns samples (2 columns: mean, sd)
+            function_results a list of callback"""
+
+
+def sample_opt_constraint(data, num_samples, limitd=None, distance_const=np.nan, angle_constraint=np.nan, callback=None):
     limitx = data.shape[1] - 1
     limity = data.shape[0] - 1
-
-    samples = np.empty(num_samples)
-
+    if (limitd is None) & (np.isnan(distance_const) | np.isnan(angle_constraint)):
+        raise Exception("limitd not set")
+    # mean, sd
+    samples = np.empty((num_samples, 2))
     for i in range(0, num_samples):
         # if a constraint not present, set it to random
         a = angle_constraint
@@ -107,29 +112,37 @@ def sample_opt_constraint(data, num_samples, limitd, distance_const=np.nan, angl
         if np.isnan(a):
             a = np.random.rand() * np.pi
         if np.isnan(d):
-            d = np.random.rand() * limitd
+            d = int(np.around(np.random.rand() * limitd, decimals=0))
+            d = 1 if (d < 1) else d
 
         # setting up for the touch down point
         th_x = np.rint(d * np.cos(a))  # theta
         th_y = np.rint(d * np.sin(a))
-
+        # limits
         lx_low = zero_or_below(th_x)  # only an issue if left directed
         lx_high = limitx - zero_or_above(th_x)
         ly_low = zero_or_below(th_y)
         ly_high = limity - zero_or_above(th_y)  # only in issue if up directed
+        # points
+        x1 = int(np.around(np.random.randint(lx_low, lx_high)))
+        y1 = int(np.around(np.random.randint(ly_low, ly_high)))
+        x2 = int(x1 + th_x)
+        y2 = int(y1 + th_y)
 
-        x1 = np.around(np.random.randint(lx_low, lx_high))
-        y1 = np.around(np.random.randint(ly_low, ly_high))
 
-        # second point
-        #
-        # print("a,d", a * (180 / np.pi), d)
-        # print("theta y,x", th_y, th_x)
+        # analysis
+        y1, y2 = order_for_slice(y1, y2)
+        x1, x2 = order_for_slice(x1, x2)
+        line_samples = np.empty(d + 1)
+        line = LineString([(x1, y1), (x2, y2)])
+        data_slice = data[y1:y2 + 1, x1:x2 + 1]
+        for j in range(d + 1):
+            c = line.interpolate(j / d, normalized=True)
+            line_samples[j] = data_slice[int(c.y - y1), int(c.x - x1)]
 
-        x2 = x1 + th_x
-        y2 = y1 + th_y
-
-        samples[i] = data[int(y1), int(x1)] - data[int(y2), int(x2)]
+        sd, mean = np.std(line_samples), np.mean(line_samples)
+        samples[i, 0] = mean
+        samples[i, 1] = sd
     return samples
 
 
@@ -144,6 +157,10 @@ def zero_or_below(x):
         return np.abs(x)
     return 0
 
+def order_for_slice(x1, x2):
+    if (x1 > x2):
+        return x2, x1
+    return x1, x2
 
 def sample_with_constraint(data, num_samples, limitd, distance_const=None, angle_constraint=None):
     if (angle_constraint is None) & (distance_const is None):
@@ -159,6 +176,10 @@ def sample_with_constraint(data, num_samples, limitd, distance_const=None, angle
     if (distance_const.shape != angle_constraint.shape):
         raise Exception("constraint arrays are not of the same size")
     const_count = angle_constraint.shape[0]
+
+    #
+    #  NOT GOING TO WORK PROPERLY
+    #
 
     samples = np.empty((const_count, num_samples))
     for i in range(const_count):
